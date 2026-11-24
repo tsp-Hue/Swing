@@ -1,0 +1,38 @@
+name: Nightly scan
+on:
+  schedule: [{ cron: '15 14 * * 1-5' }]   # 19:45 IST, Mon-Fri
+  workflow_dispatch:
+  push: { branches: [main], paths: ['web/**', 'engine/**', '.github/workflows/nightly.yml'] }
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: pages, cancel-in-progress: true }
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install pandas numpy requests
+      - name: Restore EOD data cache
+        uses: actions/cache@v4
+        with:
+          path: eod2
+          key: eod2-${{ github.run_id }}
+          restore-keys: eod2-
+      - name: Get EOD2 + dataset
+        run: |
+          [ -d eod2/.git ] || git clone --depth 1 https://github.com/BennyThadikaran/eod2.git eod2
+          [ -d eod2/src/eod2_data/daily ] || git clone --depth 1 https://github.com/BennyThadikaran/eod2_data.git eod2/src/eod2_data
+      - name: Sync latest NSE data (EOD2)
+        continue-on-error: true
+        run: cd eod2/src && pip install -r ../requirements.txt && python init.py
+      - name: Build signals
+        run: python engine/nightly.py --data eod2/src/eod2_data --out web/data
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: web }
+      - id: dep
+        uses: actions/deploy-pages@v4
