@@ -37,6 +37,12 @@ jobs:
         run: cd eod2/src && pip install -r ../requirements.txt && python init.py
       - name: Build signals
         run: python engine/nightly.py --data eod2/src/eod2_data --out web/data
+      - name: Send exit / order alert (ntfy)
+        continue-on-error: true
+        env:
+          POSITIONS: ${{ vars.POSITIONS }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python engine/alerts.py --data eod2/src/eod2_data --signals web/data/signals.json
       - name: Show what will be published
         run: ls -la web web/data
       - uses: actions/configure-pages@v5
