@@ -20,10 +20,10 @@ EOD2_DIR = os.path.join(APP_DIR, "eod2")
 DEFAULT_DATA = os.path.join(EOD2_DIR, "src", "eod2_data")
 
 DEFAULTS = dict(capital=100000.0, slots=8, orders=8, stop_atr=6.0, limit_pct=0.05, max_hold=7,
-                auto_run=True, data_dir=DEFAULT_DATA)
+                min_adtv_cr=25.0, min_price=100.0, auto_run=True, data_dir=DEFAULT_DATA)
 
 RULES_TEXT = [
-    "UNIVERSE : NSE equities, 60-day avg traded value >= Rs10 crore, price >= Rs100",
+    "UNIVERSE : NSE equities, 60-day avg traded value >= Rs25 crore (setting), price >= Rs100",
     "SIGNAL   : close > 200-DMA  AND  2-day cumulative RSI(2) < 35   (no Nifty filter)",
     "RANKING  : highest RS rank first (3/6/9/12-month composite); top N orders per day",
     "ENTRY    : LIMIT BUY 5% below the signal close, valid ONE session only (Day order). Most orders will not fill - normal.",
@@ -143,7 +143,7 @@ def scan(dfs, last, cfg):
         c, v = d.Close, d.Volume
         px = c.iloc[-1]
         adtv = (c * v).iloc[-61:-1].mean()
-        if adtv < 10e7 or px < 100:
+        if adtv < cfg.get("min_adtv_cr", 25.0) * 1e7 or px < cfg.get("min_price", 100.0):
             continue
         if (c.pct_change().abs().iloc[-60:] > 0.40).any():       # probable unadjusted corporate action
             continue

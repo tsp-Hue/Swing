@@ -2,7 +2,7 @@
 (function () {
   const L = window.SwingLogic;
   const KEY = 'swing.v1', SIGKEY = 'swing.signals';
-  const DEF = { settings: { capital: 100000, slots: 8, orders: 8, preset: 'tested', apiKey: '', dataUrl: 'data/signals.json', costPct: 0.35 }, positions: [], closed: [], orderLog: [] };
+  const DEF = { settings: { capital: 100000, slots: 8, orders: 8, preset: 'tested', apiKey: '', dataUrl: 'data/signals.json', costPct: 0.35, ghRepo: '', ghToken: '', ntfyTopic: '' }, positions: [], closed: [], orderLog: [] };
   let S = load(), DATA = null, TRACK = [];
   const $ = (id) => document.getElementById(id);
   const inr = (x) => (x < 0 ? '-' : '') + '₹' + Math.abs(Math.round(x)).toLocaleString('en-IN');
@@ -16,7 +16,26 @@
     try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) return { ...DEF, ...j, settings: { ...DEF.settings, ...(j.settings || {}) } }; } catch (e) {}
     return JSON.parse(JSON.stringify(DEF));
   }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { alert('Could not save: ' + e.message); } }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { alert('Could not save: ' + e.message); } scheduleSync(); }
+
+  // ---------- exit-alert sync: open positions -> private GitHub Actions variable, read by the nightly job which sends the ntfy push
+  let syncT = null, syncMsg = '';
+  function scheduleSync() { clearTimeout(syncT); syncT = setTimeout(() => syncAlerts(true), 1500); }
+  async function syncAlerts(quiet) {
+    const st = S.settings;
+    if (!st.ghRepo || !st.ghToken) { syncMsg = 'not set up'; return; }
+    const payload = JSON.stringify({ updated: new Date().toISOString(), positions: S.positions.map((p) => ({ symbol: p.symbol, entry_date: p.entry_date, entry_price: p.entry_price, qty: p.qty })) });
+    const base = 'https://api.github.com/repos/' + st.ghRepo.replace(/^\/+|\/+$/g, '') + '/actions/variables';
+    const hdr = { Authorization: 'Bearer ' + st.ghToken, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' };
+    try {
+      let r = await fetch(base + '/POSITIONS', { method: 'PATCH', headers: hdr, body: JSON.stringify({ name: 'POSITIONS', value: payload }) });
+      if (r.status === 404) r = await fetch(base, { method: 'POST', headers: hdr, body: JSON.stringify({ name: 'POSITIONS', value: payload }) });
+      if (!r.ok) throw new Error('GitHub said ' + r.status + (r.status === 401 || r.status === 403 ? ' (check the token and its "Variables: read and write" permission)' : ''));
+      syncMsg = 'synced ' + new Date().toLocaleTimeString();
+      if (!quiet) alert('Alerts synced: ' + S.positions.length + ' open position(s) sent.');
+    } catch (e) { syncMsg = 'failed: ' + e.message; if (!quiet) alert('Sync failed: ' + e.message); }
+    const el = document.getElementById('syncStatus'); if (el) el.textContent = syncMsg;
+  }
 
   // ---------- dialog helper
   function ask(title, fields, okText) {
@@ -104,7 +123,7 @@
     if (!c.length) h += `<div class="empty">${free === 0 ? 'All slots are full - no new orders.' : 'No new orders tonight.'}</div>`;
     c.forEach((o, i) => {
       h += `<div class="card"><div class="row"><label class="row" style="margin:0;gap:10px;align-items:center"><input type="checkbox" class="pick" data-i="${i}" checked><span class="sym">${esc(o.symbol)}</span></label><span class="mute">RS ${o.rs_rank} · RSI ${o.cum_rsi2}</span></div>
-      <div class="kv"><div>BUY LIMIT<b>${o.limit}</b></div><div>STOP LOSS<b>${o.stop}</b></div><div>QTY<b>${o.qty}</b></div><div>Signal close<b>${o.close}</b></div><div>Amount<b>${inr(o.qty * o.limit)}</b></div><div>vs 200-DMA<b>+${o.pct_above_200dma}%</b></div></div></div>`;
+      <div class="kv"><div>BUY LIMIT<b>${o.limit}</b></div><div>STOP LOSS<b>${o.stop}</b></div><div>QTY<b>${o.qty}</b></div><div>Signal close<b>${o.close}</b></div><div>Amount<b>${inr(o.qty * o.limit)}</b></div><div>vs 200-DMA<b>+${o.pct_above_200dma}%</b></div><div>Avg turnover<b>₹${o.adtv_cr} cr/day</b></div></div></div>`;
     });
     if (c.length) h += `<div class="actions"><button class="primary" id="kiteBtn">Open in Kite (basket)</button><button class="ghost" id="copyBtn">Copy list</button></div>
       <div class="small">Kite opens with these as one-day LIMIT orders - you review and confirm there. Most won't fill (about 1 in 14) - that is normal; never chase the stock next day. After you confirm in Kite, come back here: the app will detect fills from the next day's prices.</div>`;
@@ -215,11 +234,20 @@
     <h2>Zerodha Kite</h2>
     <label>Kite Connect API key (free "Personal" app)</label><input id="s_key" value="${esc(s.apiKey)}" autocomplete="off">
     <div class="small">Only the public API key is needed (never your secret or password). Create the app at developers.kite.trade and set its redirect URL to this app's address.</div>
+    <h2>Exit alerts on your phone (free)</h2>
+    <div class="small">Each evening GitHub sends a push (through the free ntfy app) listing stocks to sell at tomorrow's open and the new orders. Setup steps are in README section "Exit alerts".</div>
+    <label>ntfy topic (same name you subscribed to in the ntfy app)</label><input id="s_ntfy" value="${esc(s.ntfyTopic)}" autocomplete="off">
+    <label>GitHub repository (username/repo)</label><input id="s_repo" value="${esc(s.ghRepo)}" placeholder="yourname/swing" autocomplete="off">
+    <label>GitHub token (fine-grained, this repo only, Variables: read and write)</label><input id="s_tok" type="password" value="${esc(s.ghToken)}" autocomplete="off">
+    <div class="actions"><button class="ghost" id="s_sync">Sync positions now</button><button class="ghost" id="s_test">Send test alert</button></div>
+    <div class="small">Status: <span id="syncStatus">${esc(syncMsg || 'not synced yet')}</span></div>
     <h2>Data</h2><label>Signals URL</label><input id="s_url" value="${esc(s.dataUrl)}">
     <div class="actions"><button class="primary" id="s_save">Save</button><button class="ghost" id="s_notif">Enable exit notifications</button></div>
     <div class="small">Notifications appear when you open the app and an exit is due (this app cannot run in the background). Disclaimer: not financial advice. Results come from a backtest on today's surviving stocks and overstate live performance.</div>
     <div class="actions"><button class="danger" id="s_reset">Erase all app data</button></div>`;
-    $('s_save').onclick = () => { Object.assign(S.settings, { capital: +$('s_capital').value, slots: +$('s_slots').value, orders: +$('s_orders').value, preset: $('s_preset').value, costPct: +$('s_cost').value, apiKey: $('s_key').value.trim(), dataUrl: $('s_url').value.trim() || 'data/signals.json' }); save(); init(true); };
+    $('s_save').onclick = () => { Object.assign(S.settings, { capital: +$('s_capital').value, slots: +$('s_slots').value, orders: +$('s_orders').value, preset: $('s_preset').value, costPct: +$('s_cost').value, apiKey: $('s_key').value.trim(), ntfyTopic: $('s_ntfy').value.trim(), ghRepo: $('s_repo').value.trim(), ghToken: $('s_tok').value.trim(), dataUrl: $('s_url').value.trim() || 'data/signals.json' }); save(); init(true); };
+    $('s_sync').onclick = () => { Object.assign(S.settings, { ghRepo: $('s_repo').value.trim(), ghToken: $('s_tok').value.trim() }); save(); syncAlerts(false); };
+    $('s_test').onclick = async () => { const t = $('s_ntfy').value.trim(); if (!t) return alert('Enter your ntfy topic first.'); try { const r = await fetch('https://ntfy.sh/' + encodeURIComponent(t), { method: 'POST', body: 'Test alert from Swing Tracker - your phone is set up.', headers: { Title: 'Swing Tracker test' } }); alert(r.ok ? 'Sent - check the ntfy app.' : 'ntfy said ' + r.status); } catch (e) { alert('Could not send: ' + e.message); } };
     $('s_notif').onclick = async () => { try { alert((await Notification.requestPermission()) === 'granted' ? 'Notifications enabled' : 'Permission not granted'); } catch (e) { alert('Not supported on this browser'); } };
     $('s_reset').onclick = async () => { if (await confirmBox('Erase ALL positions, trades and settings from this phone?')) { localStorage.removeItem(KEY); S = JSON.parse(JSON.stringify(DEF)); refresh(); } };
   }
